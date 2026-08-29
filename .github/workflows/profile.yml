@@ -31,6 +31,11 @@ jobs:
             dist/snake.svg?color_snake=%232da44e&color_dots=%23ebedf0,%23aceebb,%234ac26b,%232da44e,%23116329
             dist/snake-dark.svg?palette=github-dark&color_snake=%2339d353
 
+      # snk — Docker-экшен, он работает от root и создаёт dist/ с владельцем root.
+      # Дальше шаги идут от runner, которому туда писать уже нельзя.
+      - name: Вернуть права на dist
+        run: sudo chown -R "$(id -u):$(id -g)" dist
+
       - name: Блок активности
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
