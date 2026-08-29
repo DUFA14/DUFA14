@@ -36,9 +36,9 @@ jobs:
       - name: Вернуть права на dist
         run: sudo chown -R "$(id -u):$(id -g)" dist
 
+      # токен не нужен: считаем по публичному календарю, как его видит гость
       - name: Блок активности
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_USER: ${{ github.repository_owner }}
         run: node tools/stats.js dist
 

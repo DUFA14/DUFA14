@@ -7,7 +7,6 @@ const path = require('path');
 const { word } = require('./glyphs.js');
 
 const USER = process.env.GH_USER || 'DUFA14';
-const TOKEN = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 const OUT = process.argv[2] || 'assets';
 
 const MONO = "Consolas,'Lucida Console',Monaco,'DejaVu Sans Mono','Liberation Mono',ui-monospace,monospace";
@@ -18,31 +17,56 @@ const THEMES = {
   light: { frame: '#d0d7de', textPrimary: '#1f2328', textDim: '#59636e', tick: '#e4e8ec' },
 };
 
+// Считаем по ПУБЛИЧНОМУ календарю — тому, что видит посетитель профиля.
+//
+// Через GraphQL с токеном владельца цифры другие (3306 против 2896, 292
+// активных дня против 139): токен видит приватные вклады, которых гостю
+// не показывают. Блок стоит рядом со змейкой, а она рисуется по публичному
+// календарю — при расчёте по токену страница противоречила бы сама себе.
+// Этот эндпоинт отдаёт ровно гостевую картину и не требует авторизации.
 async function calendar() {
-  if (!TOKEN) throw new Error('нет GITHUB_TOKEN / GH_TOKEN в окружении');
-  const query = `{ user(login:"${USER}"){ contributionsCollection {
-      contributionCalendar { totalContributions weeks { contributionDays { date contributionCount } } } } } }`;
-  const res = await fetch('https://api.github.com/graphql', {
-    method: 'POST',
-    headers: { Authorization: `bearer ${TOKEN}`, 'Content-Type': 'application/json', 'User-Agent': USER },
-    body: JSON.stringify({ query }),
-  });
-  if (!res.ok) throw new Error(`GraphQL HTTP ${res.status}: ${await res.text()}`);
-  const json = await res.json();
-  if (json.errors) throw new Error('GraphQL: ' + JSON.stringify(json.errors));
-  return json.data.user.contributionsCollection.contributionCalendar;
+  const url = `https://github.com/users/${USER}/contributions`;
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html' } });
+  if (!res.ok) throw new Error(`HTTP ${res.status} от ${url}`);
+  const html = await res.text();
+
+  // клетки календаря: дата и id, по которому к ней привязана подсказка
+  const days = [];
+  for (const td of html.match(/<td[^>]*ContributionCalendar-day[^>]*>/g) || []) {
+    const date = (td.match(/data-date="([\d-]+)"/) || [])[1];
+    const id = (td.match(/id="([^"]+)"/) || [])[1];
+    if (date && id) days.push({ date, id, count: 0 });
+  }
+  if (days.length < 300) throw new Error(`разобрано всего ${days.length} клеток календаря — разметка страницы изменилась`);
+
+  // подсказки вида "N contributions on ..." либо "No contributions on ..."
+  const byId = new Map(days.map(d => [d.id, d]));
+  let matched = 0;
+  const re = /<tool-tip[^>]*for="([^"]+)"[^>]*>([^<]*)<\/tool-tip>/g;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const d = byId.get(m[1]);
+    if (!d) continue;
+    const num = m[2].match(/^([\d,]+)\s+contribution/);
+    d.count = num ? parseInt(num[1].replace(/,/g, ''), 10) : 0;
+    matched++;
+  }
+  if (matched < days.length * 0.9) throw new Error(`подсказки нашлись лишь для ${matched} из ${days.length} клеток — разметка страницы изменилась`);
+
+  days.sort((a, b) => a.date.localeCompare(b.date));
+  return days;
 }
 
-function metrics(cal) {
-  const days = cal.weeks.flatMap(w => w.contributionDays);
-  const active = days.filter(d => d.contributionCount > 0);
+function metrics(days) {
+  const total = days.reduce((s, d) => s + d.count, 0);
+  const active = days.filter(d => d.count > 0).length;
   let cur = 0, best = 0;
-  for (const d of days) { if (d.contributionCount > 0) { if (++cur > best) best = cur; } else cur = 0; }
+  for (const d of days) { if (d.count > 0) { if (++cur > best) best = cur; } else cur = 0; }
   return [
-    { n: cal.totalContributions, label: 'контрибуций за год' },
-    { n: active.length,          label: 'активных дней' },
-    { n: best,                   label: 'лучшая серия, дней' },
-    { n: Math.max(0, ...days.map(d => d.contributionCount)), label: 'лучший день' },
+    { n: total,  label: 'контрибуций за год' },
+    { n: active, label: 'активных дней' },
+    { n: best,   label: 'лучшая серия, дней' },
+    { n: Math.max(0, ...days.map(d => d.count)), label: 'лучший день' },
   ];
 }
 
