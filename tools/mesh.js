@@ -1,13 +1,14 @@
-// Топология строится из геометрии, а не назначается руками.
-//   1. Точки раскладываются по полю value-noise -> естественные сгущения и пустоты.
-//   2. Связи — граф Габриэля: ребро AB есть, если в круге с диаметром AB нет других точек.
-//      Это стандартная модель топологии беспроводных mesh-сетей; кластеры и перемычки
-//      возникают сами, без ручных "бэкбонов".
-//   3. Глубина z берётся из второго поля шума, поэтому она пространственно связная:
-//      соседние узлы лежат на близких планах, а не мерцают вразнобой.
-
-const W = 1000, H = 280;
-let X0 = -18, X1 = 548, Y0 = 12, Y1 = 268;
+// Граф в терминальной логике: узлы стоят на знакоместах, трассы идут
+// только по горизонтали и вертикали. Никаких диагоналей и плавной глубины —
+// в TUI всё дискретно.
+//
+//   1. Точки набрасываются по полю value-noise -> связные сгущения и пустоты
+//      (обычный Math.random даёт равномерную кашу без структуры).
+//   2. Связи — RNG, relative neighborhood graph: ребро AB есть, если нет
+//      точки C, которая ближе и к A, и к B одновременно. Разреженнее графа
+//      Габриэля, поэтому ортогональные трассы не слипаются.
+//   3. Каждое ребро разводится буквой Г; направление выбирается по тому,
+//      какой вариант меньше накладывается на уже занятые клетки.
 
 function mulberry32(a) {
   return function () {
@@ -18,7 +19,6 @@ function mulberry32(a) {
   };
 }
 
-// решётчатый value-noise со сглаживанием — даёт связные пятна плотности
 function makeNoise(rnd, N) {
   const g = [];
   for (let i = 0; i <= N; i++) { g[i] = []; for (let j = 0; j <= N; j++) g[i][j] = rnd(); }
@@ -32,53 +32,86 @@ function makeNoise(rnd, N) {
   };
 }
 
-function build(seed, opt) {
-  if (opt && opt.bounds) { [X0, Y0, X1, Y1] = opt.bounds; }
+function buildGrid(seed, opt = {}) {
+  const COLS = opt.cols || 44, ROWS = opt.rows || 19;
+  const TARGET = opt.n || 35, MIND = opt.mind || 3;
   const rnd = mulberry32(seed);
-  const density = makeNoise(rnd, 5);
-  const depth = makeNoise(rnd, 3);
-  const TARGET = (opt && opt.n) || 54;
+  const density = makeNoise(rnd, 4);
 
-  const norm = (x, y) => [(x - X0) / (X1 - X0), (y - Y0) / (Y1 - Y0)];
-
+  // --- узлы на знакоместах ---
   const nodes = [];
   let tries = 0;
-  while (nodes.length < TARGET && tries < 60000) {
+  while (nodes.length < TARGET && tries < 40000) {
     tries++;
-    const x = X0 + rnd() * (X1 - X0);
-    const y = Y0 + rnd() * (Y1 - Y0);
-    const [u, v] = norm(x, y);
-
-    // плотность падает вправо, чтобы сеть растворялась перед типографикой
-    const d = 0.28 + 0.72 * density(u, v);
-    if (rnd() > Math.pow(d, 1.25)) continue;
-
-    // в плотных местах узлы стоят теснее — отсюда берутся сгущения
-    const minD = 21 + 32 * (1 - d);
-    if (nodes.some(n => (n.x - x) ** 2 + (n.y - y) ** 2 < minD * minD)) continue;
-
-    nodes.push({ x, y, z: depth(u, v) });
+    const c = 1 + Math.floor(rnd() * (COLS - 2));
+    const r = 1 + Math.floor(rnd() * (ROWS - 2));
+    const d = 0.46 + 0.54 * density(c / COLS, r / ROWS);
+    if (rnd() > Math.pow(d, 1.3)) continue;
+    // Чебышёв: узлам нужен коридор, иначе трассам негде пройти
+    if (nodes.some(n => Math.max(Math.abs(n.c - c), Math.abs(n.r - r)) < MIND)) continue;
+    nodes.push({ c, r });
   }
 
-  // --- граф Габриэля ---
+  // --- RNG ---
+  const D = (a, b) => Math.hypot(a.c - b.c, a.r - b.r);
   const edges = [];
   for (let i = 0; i < nodes.length; i++) {
     for (let j = i + 1; j < nodes.length; j++) {
-      const a = nodes[i], b = nodes[j];
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      const r2 = ((a.x - b.x) ** 2 + (a.y - b.y) ** 2) / 4;
+      const dij = D(nodes[i], nodes[j]);
       let ok = true;
       for (let k = 0; k < nodes.length; k++) {
         if (k === i || k === j) continue;
-        if ((nodes[k].x - mx) ** 2 + (nodes[k].y - my) ** 2 < r2) { ok = false; break; }
+        if (Math.max(D(nodes[i], nodes[k]), D(nodes[j], nodes[k])) < dij) { ok = false; break; }
       }
-      if (ok) edges.push({ i, j, d: Math.hypot(a.x - b.x, a.y - b.y) });
+      if (ok) edges.push({ i, j, d: dij });
     }
   }
 
-  nodes.forEach(n => { n.x = +n.x.toFixed(1); n.y = +n.y.toFixed(1); n.z = +n.z.toFixed(3); });
-  edges.forEach(e => { e.d = +e.d.toFixed(1); });
-  return { nodes, edges };
+  // RNG срезает локальное резервирование, которое в реальных сетях есть.
+  // Возвращаем его: короткие рёбра Габриэля, которых нет в RNG.
+  const have = new Set(edges.map(e => e.i + ':' + e.j));
+  const extra = [];
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      if (have.has(i + ':' + j)) continue;
+      const dij = D(nodes[i], nodes[j]);
+      const mc = (nodes[i].c + nodes[j].c) / 2, mr = (nodes[i].r + nodes[j].r) / 2;
+      let ok = true;
+      for (let k = 0; k < nodes.length; k++) {
+        if (k === i || k === j) continue;
+        if (Math.hypot(nodes[k].c - mc, nodes[k].r - mr) < dij / 2) { ok = false; break; }
+      }
+      if (ok) extra.push({ i, j, d: dij });
+    }
+  }
+  extra.sort((a, b) => a.d - b.d);
+  edges.push(...extra.slice(0, Math.round(nodes.length * 0.3)));
+
+  // --- разводка буквой Г, с учётом занятости клеток ---
+  const used = new Map();
+  const load = (c, r) => used.get(c + ',' + r) || 0;
+  const mark = (c, r) => used.set(c + ',' + r, load(c, r) + 1);
+
+  const span = (from, to) => { const s = []; const st = from <= to ? 1 : -1; for (let v = from; v !== to + st; v += st) s.push(v); return s; };
+  const legH = (r, c0, c1) => span(c0, c1).map(c => [c, r]);
+  const legV = (c, r0, r1) => span(r0, r1).map(r => [c, r]);
+
+  edges.sort((a, b) => a.d - b.d);
+  for (const e of edges) {
+    const a = nodes[e.i], b = nodes[e.j];
+    const varA = [...legH(a.r, a.c, b.c), ...legV(b.c, a.r, b.r)];   // сперва по горизонтали
+    const varB = [...legV(a.c, a.r, b.r), ...legH(b.r, a.c, b.c)];   // сперва по вертикали
+    const cost = (cells) => cells.reduce((s, [c, r]) => s + load(c, r), 0);
+    const pick = cost(varA) <= cost(varB) ? varA : varB;
+    pick.forEach(([c, r]) => mark(c, r));
+    e.corner = (pick === varA) ? { c: b.c, r: a.r } : { c: a.c, r: b.r };
+  }
+
+  const deg = nodes.map(() => 0);
+  edges.forEach(e => { deg[e.i]++; deg[e.j]++; });
+  nodes.forEach((n, i) => { n.deg = deg[i]; });
+
+  return { nodes, edges, COLS, ROWS };
 }
 
-module.exports = { W, H, build, mulberry32 };
+module.exports = { buildGrid, mulberry32 };
