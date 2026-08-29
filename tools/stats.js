@@ -1,6 +1,6 @@
-// Блок активности. Считает календарь контрибуций и рисует SVG под обе темы.
+// Блок активности: считает публичный календарь и рисует SVG под обе темы.
 // Запуск в CI: node tools/stats.js <выходная-папка>
-// Токен из GITHUB_TOKEN / GH_TOKEN. Календарь публичный — штатного токена Actions хватает.
+// Авторизация не нужна — данные берутся с публичной страницы профиля.
 
 const fs = require('fs');
 const path = require('path');
@@ -63,7 +63,7 @@ function metrics(days) {
   let cur = 0, best = 0;
   for (const d of days) { if (d.count > 0) { if (++cur > best) best = cur; } else cur = 0; }
   return [
-    { n: total,  label: 'контрибуций за год' },
+    { n: total,  label: 'коммитов за год' },
     { n: active, label: 'активных дней' },
     { n: best,   label: 'лучшая серия, дней' },
     { n: Math.max(0, ...days.map(d => d.count)), label: 'лучший день' },
